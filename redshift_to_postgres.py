@@ -4,8 +4,12 @@ import os
 import pandas as pd
 from sqlalchemy import create_engine, text
 from typing import Any, Optional
+from dotenv import load_dotenv
 
-# ✅ PostgreSQL 접속 기본 설정 (환경변수 또는 하드코딩 가능)
+# 🔐 .env 로드
+load_dotenv()
+
+# ✅ 기본 PostgreSQL 설정 (env 또는 기본값)
 PG_CONFIG = {
     "user": os.getenv("PG_USER", "postgres"),
     "password": os.getenv("PG_PASSWORD", "mypassword"),
@@ -14,10 +18,21 @@ PG_CONFIG = {
     "database": os.getenv("PG_DB", "mydb")
 }
 
+
 def get_pg_engine(pg_config: dict = PG_CONFIG):
-    """PostgreSQL SQLAlchemy 엔진 생성"""
+    """SQLAlchemy PostgreSQL 엔진 생성"""
     pg_url = f"postgresql+psycopg2://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
     return create_engine(pg_url)
+
+
+def ensure_pg_schema(conn, schema: str):
+    """스키마가 없으면 자동 생성"""
+    try:
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+        print(f"📁 스키마 확인/생성 완료: {schema}")
+    except Exception as e:
+        print(f"⚠️ 스키마 생성 실패: {e}")
+
 
 def redshift_to_local_pg_partitioned(
     rs_conn,
@@ -29,28 +44,10 @@ def redshift_to_local_pg_partitioned(
 ):
     """
     Redshift → PostgreSQL 적재 모듈
-    - 테이블 자동 매핑
-    - 파티션 또는 전체 삭제
-    - ANALYZE + VACUUM 필수
-    - 인덱스는 선택
-
-    Parameters
-    ----------
-    rs_conn : redshift_connector.Connection
-        Redshift 커넥션
-
-    query_map : dict
-        {alias: Redshift 쿼리문}
-
-    table_map : dict
-        {alias: (pg_schema, pg_table)} (생략 가능)
-
-    partition_info : dict
-        {alias: (column, value)} 기준 삭제
-
-    index_info : dict
-        {alias: [column1, column2]} 인덱스 생성용
+    - 스키마 자동 생성
+    - 파티션/전체 삭제 → 저장 → 인덱스 → ANALYZE/VACUUM
     """
+
     pg_engine = get_pg_engine(pg_config)
 
     with pg_engine.connect() as conn:
@@ -70,9 +67,13 @@ def redshift_to_local_pg_partitioned(
             else:
                 print(f"❌ 테이블명 추론 실패: {alias}")
                 continue
+
             full_table = f"{pg_schema}.{pg_table}"
 
-            # 삭제
+            # ✅ 스키마 없으면 자동 생성
+            ensure_pg_schema(conn, pg_schema)
+
+            # 🧹 기존 데이터 삭제
             if partition_info and alias in partition_info:
                 col, val = partition_info[alias]
                 try:
@@ -87,7 +88,7 @@ def redshift_to_local_pg_partitioned(
                 except Exception as e:
                     print(f"⚠️ 전체 삭제 실패: {e}")
 
-            # 저장
+            # 💾 데이터 저장
             try:
                 df.to_sql(
                     name=pg_table,
@@ -102,7 +103,7 @@ def redshift_to_local_pg_partitioned(
                 print(f"❌ 저장 실패: {full_table}: {e}")
                 continue
 
-            # 인덱스
+            # ⚡ 인덱스 생성 (선택)
             if index_info and alias in index_info:
                 for col in index_info[alias]:
                     idx_name = f"idx_{pg_table}_{col}"
@@ -112,7 +113,7 @@ def redshift_to_local_pg_partitioned(
                     except Exception as e:
                         print(f"⚠️ 인덱스 실패: {e}")
 
-            # ANALYZE + VACUUM
+            # 📊 통계 갱신
             try:
                 conn.execute(text(f"ANALYZE {full_table}"))
                 conn.execute(text(f"VACUUM ANALYZE {full_table}"))

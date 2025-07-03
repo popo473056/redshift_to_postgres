@@ -31,8 +31,9 @@ brew services start postgresql  # 항상 켜짐
 
 ```bash
 createdb mydb
-psql -U postgres -d mydb -c "CREATE SCHEMA IF NOT EXISTS analytics;"
+#psql -U postgres -d mydb -c "CREATE SCHEMA IF NOT EXISTS analytics;"
 ```
+> 스키마는 자동으로 생성함 (v2)
 
 ---
 
